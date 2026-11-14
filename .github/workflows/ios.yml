@@ -1,17 +1,8 @@
-name: ios
+name: Build unsigned IPA
 # The game for iPhone and iPad, and nothing else: the Rust game cross-compiled for aarch64-apple-ios, wrapped by
 # packaging/ios/project.yml's HorizonGame target, and uploaded as an unsigned .ipa. No tests run here.
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
-    inputs:
-      publish_release:
-        description: Publish an unsigned release (main branch only)
-        type: boolean
-        default: false
-  pull_request:
-    branches: [main]
 permissions:
   contents: read
 concurrency:
@@ -34,32 +25,34 @@ jobs:
   ipa:
     # The native launcher uses the iOS 26 SDK (Liquid Glass). macos-15 defaults to Xcode 16.4.
     # MAC_RUNNER remains available for a maintainer-provided runner with Xcode 26 or newer.
-    # Standard Intel PR runners avoid the ARM hosted-pool capacity queue.
     # Both Rust and Xcode still explicitly target ARM64 iOS below.
-    runs-on: ${{ github.event_name == 'pull_request' && 'macos-26-intel' || vars.MAC_RUNNER || 'macos-26' }}
+    runs-on: ${{ vars.MAC_RUNNER || 'macos-26' }}
     timeout-minutes: 90
     defaults:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
         with:
           persist-credentials: false
       - name: Check the Apple toolchain
         run: bash tools/ci/ios-toolchain.sh
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Rust iOS toolchain
+        uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ env.IOS_TARGET }}
-      - uses: Swatinem/rust-cache@v2
+      - name: Restore Rust build cache
+        uses: Swatinem/rust-cache@v2
         if: runner.environment == 'github-hosted'
         with:
           shared-key: ios-${{ env.IOS_TARGET }}
-      - name: Build the game
+      - name: Build Rust game for iOS
         # The public Microsoft sign-in app is shared by the Rust executable and native launcher.
         # The defaults minus `controllers` (GameController reads pads), with `audio`: project.yml's Cargo phase
         # uses the same flags, so HORIZON_GAME_PREBUILT below finds this build.
         run: cargo build --release --locked --target "$IOS_TARGET" -p horizon-official --no-default-features --features audio,horizon-extras
-      - name: Bundle it
+      - name: Build unsigned IPA
         run: |
           set -euo pipefail
           command -v xcodegen >/dev/null || brew install xcodegen
@@ -84,44 +77,12 @@ jobs:
           path: xcode-game-build.log
           retention-days: 7
           if-no-files-found: ignore
-      - name: Audit the unsigned distributable
+      - name: Audit unsigned IPA
         run: python3 tools/ci/ios_release.py Horizon-game-unsigned.ipa --expect-commit "$GITHUB_SHA" --run-number "$GITHUB_RUN_NUMBER" --run-attempt "$GITHUB_RUN_ATTEMPT"
-      - uses: actions/upload-artifact@v4
+      - name: Upload unsigned IPA
+        uses: actions/upload-artifact@v4
         with:
           name: horizon-ios-game
           path: Horizon-game-unsigned.ipa
           retention-days: 7
           if-no-files-found: error
-  release:
-    needs: ipa
-    # Never grant publication privileges to PRs or builds of arbitrary branches.
-    if: >-
-      github.repository == 'heyskylo/horizon-ios' && github.ref == 'refs/heads/main' &&
-      (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish_release))
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      contents: write
-      actions: read
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - uses: actions/download-artifact@v4
-        with:
-          name: horizon-ios-game
-          path: ipa-artifact
-      - name: Prepare versioned IPA and checksum
-        id: asset
-        run: |
-          python3 tools/ci/ios_release.py ipa-artifact/Horizon-game-unsigned.ipa \
-            --expect-commit "$GITHUB_SHA" --run-number "$GITHUB_RUN_NUMBER" --run-attempt "$GITHUB_RUN_ATTEMPT" --output-dir release-assets >> "$GITHUB_OUTPUT"
-      - name: Publish unsigned release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          IPA: ${{ steps.asset.outputs.ipa }}
-          CHECKSUM: ${{ steps.asset.outputs.checksum }}
-          VERSION: ${{ steps.asset.outputs.version }}
-          BUILD: ${{ steps.asset.outputs.build }}
-        run: bash tools/ci/publish-ios-release.sh
