@@ -8,6 +8,14 @@ use crate::{
 };
 use std::sync::LazyLock;
 
+/// The Chinese iOS distribution starts in Simplified Chinese. A saved `lang`
+/// option always takes precedence, so players can still choose another language.
+pub(crate) const DEFAULT_LANGUAGE: &str = if cfg!(target_os = "ios") {
+    "zh_cn"
+} else {
+    "en_us"
+};
+
 /// A stored option value.
 #[derive(Clone, Debug, PartialEq)]
 pub enum V {
@@ -198,7 +206,7 @@ static TABLE: LazyLock<Vec<Def>> = LazyLock::new(|| {
         def("resourcePacks", List, V::List(Vec::new())),
         def("incompatibleResourcePacks", List, V::List(Vec::new())),
         def("lastServer", PS, V::Str(String::new())),
-        def("lang", PS, V::Str("en_us".into())),
+        def("lang", PS, V::Str(DEFAULT_LANGUAGE.into())),
         id("chatVisibility", 3, 0),
         u("chatOpacity", 1.0),
         u("chatLineSpacing", 0.0),

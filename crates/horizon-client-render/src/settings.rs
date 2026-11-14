@@ -262,7 +262,7 @@ impl Default for Settings {
             toggle_crouch: false,
             toggle_sprint: false,
             auto_jump: false,
-            language: "en_us".into(),
+            language: crate::options_file::DEFAULT_LANGUAGE.into(),
             force_unicode: false,
             japanese_glyphs: false,
             chat_visibility: 0,
@@ -1190,6 +1190,12 @@ mod tests {
         assert_eq!(fresh.inactivity_fps_limit, empty.inactivity_fps_limit);
         assert_eq!(fresh.render_distance, empty.render_distance);
         assert_eq!(fresh.simulation_distance, empty.simulation_distance);
+    }
+    #[test]
+    fn language_defaults_match_and_saved_choice_wins() {
+        assert_eq!(Settings::default().language, crate::options_file::DEFAULT_LANGUAGE);
+        assert_eq!(Settings::parse("").language, crate::options_file::DEFAULT_LANGUAGE);
+        assert_eq!(Settings::parse("lang:fr_fr\n").language, "fr_fr");
     }
     #[test]
     fn subtitle_options() {

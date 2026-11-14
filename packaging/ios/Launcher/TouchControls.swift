@@ -338,7 +338,7 @@ private struct TouchLayoutEditor: View {
                     .allowsHitTesting(false)
                     ForEach(draft.buttons) { button in
                         let r = draft.rect(button, in: gui)
-                        Text(button == .joystick ? "" : button.title)
+                        Text(button == .joystick ? "" : NSLocalizedString(button.title, comment: "Touch control"))
                             .multilineTextAlignment(.center)
                             .font(.system(size: max(12, r.height * scale * 0.28), weight: .semibold))
                             .opacity(button == .joystick ? 0 : 1)
@@ -361,7 +361,7 @@ private struct TouchLayoutEditor: View {
                             .contentShape(Rectangle())
                             .position(x: r.midX * scale, y: r.midY * scale)
                             .zIndex(selected == button ? 1 : 0)
-                            .accessibilityLabel(button.title)
+                            .accessibilityLabel(NSLocalizedString(button.title, comment: "Touch control"))
                             .accessibilityIdentifier("touch-layout-\(button.rawValue)")
                             .gesture(DragGesture(minimumDistance: 0).onChanged { value in
                                 if selected != button || dragStart == nil {
@@ -417,7 +417,7 @@ private struct TouchLayoutEditor: View {
                     ForEach(draft.buttons) { button in
                         Button(button.title) { selected = button; dragStart = nil }
                     }
-                } label: { Label(selected?.title ?? "Touch Layout", systemImage: "hand.draw") }
+                } label: { Label(NSLocalizedString(selected?.title ?? "Touch Layout", comment: "Touch layout"), systemImage: "hand.draw") }
                     .accessibilityIdentifier("touch-editor-select")
                 Spacer(minLength: 4)
                 Button { confirmReset = true } label: { Text("Reset").frame(minWidth: 50, minHeight: 44) }

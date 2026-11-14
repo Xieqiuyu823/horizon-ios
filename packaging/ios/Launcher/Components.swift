@@ -11,7 +11,7 @@ struct Field: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(title.localizedCapitalized).font(.subheadline).foregroundStyle(Theme.textMuted)
+            Text(NSLocalizedString(title.localizedCapitalized, comment: "Field label")).font(.subheadline).foregroundStyle(Theme.textMuted)
             Group {
                 if secure {
                     SecureField(placeholder, text: $text)
@@ -39,7 +39,7 @@ struct PrimaryButton: View {
     let action: () -> Void
     var body: some View {
         Button { Haptics.tap(); action() } label: {
-            Label(title, systemImage: icon ?? "arrow.right")
+            Label(NSLocalizedString(title, comment: "Button"), systemImage: icon ?? "arrow.right")
                 .font(.headline).frame(maxWidth: .infinity, minHeight: 36)
         }
         .controlSize(.large)
@@ -53,7 +53,7 @@ struct SecondaryButton: View {
     let action: () -> Void
     var body: some View {
         Button { Haptics.tap(); action() } label: {
-            Label(title, systemImage: icon ?? "arrow.right")
+            Label(NSLocalizedString(title, comment: "Button"), systemImage: icon ?? "arrow.right")
                 .font(.body).frame(maxWidth: .infinity, minHeight: 32)
         }
         .controlSize(.large)
@@ -78,7 +78,7 @@ struct SectionHeader<Trailing: View>: View {
 
     var body: some View {
         HStack {
-            Text(title).font(Theme.pixel(20)).foregroundStyle(Theme.text)
+            Text(NSLocalizedString(title, comment: "Section heading")).font(Theme.pixel(20)).foregroundStyle(Theme.text)
             Spacer()
             trailing()
         }
@@ -99,9 +99,9 @@ struct PageTitle: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(title).font(Theme.pixel(30)).foregroundStyle(Theme.text)
+            Text(NSLocalizedString(title, comment: "Page heading")).font(Theme.pixel(30)).foregroundStyle(Theme.text)
             if let subtitle {
-                Text(subtitle).font(Theme.sans(12)).foregroundStyle(Theme.textMuted)
+                Text(NSLocalizedString(subtitle, comment: "Page subtitle")).font(Theme.sans(12)).foregroundStyle(Theme.textMuted)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)

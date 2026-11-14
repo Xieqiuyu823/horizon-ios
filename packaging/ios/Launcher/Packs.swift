@@ -306,7 +306,7 @@ struct PacksPage: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Picker("Kind", selection: $kind) {
-                ForEach(PackKind.allCases) { Text($0.title).tag($0) }
+                ForEach(PackKind.allCases) { Text(NSLocalizedString($0.title, comment: "Pack type")).tag($0) }
             }
             .pickerStyle(.segmented)
 
@@ -412,9 +412,9 @@ struct PacksPage: View {
                 }
             }
             .card()
-            Text(link.canList
+            Text(NSLocalizedString(link.canList
                 ? "Switch a pack on to use it; hold one to delete it."
-                : "Packs can be switched on in a moment.")
+                : "Packs can be switched on in a moment.", comment: "Pack guidance"))
                 .font(Theme.sans(11)).foregroundStyle(Theme.textFaint)
         }
     }

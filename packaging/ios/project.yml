@@ -84,6 +84,7 @@ targets:
     sources:
       - path: GameShell
       - path: Assets.xcassets
+      - path: Resources
     # The launcher, copied into Frameworks/ and signed with the game.
     dependencies:
       - target: HorizonLauncherKit

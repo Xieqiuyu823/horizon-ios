@@ -1,7 +1,6 @@
 name: ios
 # The game for iPhone and iPad, and nothing else: the Rust game cross-compiled for aarch64-apple-ios, wrapped by
-# packaging/ios/project.yml's HorizonGame target, and uploaded as an unsigned .ipa. No tests run here. The .ipa is then posted to Discord when the repository secret
-# DISCORD_IPA_WEBHOOK is set.
+# packaging/ios/project.yml's HorizonGame target, and uploaded as an unsigned .ipa. No tests run here.
 on:
   push:
     branches: [main]
@@ -93,35 +92,6 @@ jobs:
           path: Horizon-game-unsigned.ipa
           retention-days: 7
           if-no-files-found: error
-      - name: Send the .ipa to Discord
-        # Delivery is optional: the IPA is already available in the run's artifacts.
-        continue-on-error: true
-        if: github.event_name != 'pull_request' && env.DISCORD_IPA_WEBHOOK != ''
-        env:
-          DISCORD_IPA_WEBHOOK: ${{ secrets.DISCORD_IPA_WEBHOOK }}
-        run: |
-          set -uo pipefail
-          content=$(printf '%s\n' \
-            "**Horizon for iPhone and iPad, run #${GITHUB_RUN_NUMBER}**" \
-            "\`${GITHUB_REF_NAME}@${GITHUB_SHA::7}\`: an unsigned .ipa, with no assets" \
-            "🤖 Posted by \`.github/workflows/ios.yml\`, not by a person.")
-          response=$(mktemp)
-          trap 'rm -f "$response"' EXIT
-          if ! code=$(curl --connect-timeout 15 --max-time 120 -sS -o "$response" -w '%{http_code}' -X POST "$DISCORD_IPA_WEBHOOK" \
-            -F "content=$content" -F "file=@Horizon-game-unsigned.ipa;type=application/octet-stream"); then
-            echo "::warning::Could not reach Discord. The IPA is available in this run's artifacts."
-            exit 0
-          fi
-          case "$code" in
-            2*) echo "Posted the .ipa to Discord (HTTP $code)." ;;
-            404)
-              echo "::warning::Discord webhook no longer exists (HTTP 404). Replace the DISCORD_IPA_WEBHOOK repository secret. Download the IPA from this run's artifacts."
-              ;;
-            *)
-              echo "::warning::Discord delivery failed (HTTP $code). The IPA is available in this run's artifacts."
-              ;;
-          esac
-
   release:
     needs: ipa
     # Never grant publication privileges to PRs or builds of arbitrary branches.

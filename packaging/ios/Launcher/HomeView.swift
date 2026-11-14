@@ -19,7 +19,7 @@ struct HomeView: View {
     enum Destination: String, CaseIterable, Identifiable {
         case play, packs, settings
         var id: Self { self }
-        var title: String { rawValue.capitalized }
+        var title: String { NSLocalizedString(rawValue.capitalized, comment: "Launcher navigation") }
         var icon: String {
             switch self {
             case .play: return "play.circle"
@@ -217,7 +217,7 @@ struct HomeView: View {
             }
             HStack {
                 Button { Task { await link.play() } } label: {
-                    Label(playLabel, systemImage: "play.fill")
+                    Label(NSLocalizedString(playLabel, comment: "Play status"), systemImage: "play.fill")
                         .font(.headline).frame(minWidth: 124, minHeight: 36)
                 }
                 .controlSize(.large)

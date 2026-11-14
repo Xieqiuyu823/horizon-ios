@@ -80,7 +80,7 @@ struct WorldsSection: View {
             } else if worlds.isEmpty {
                 VStack(spacing: 16) {
                     Image(systemName: "globe.europe.africa").font(.system(size: 48, weight: .ultraLight))
-                    Text(query.isEmpty ? "Your next adventure starts here" : "No matching worlds").font(.title3.bold())
+                    Text(NSLocalizedString(query.isEmpty ? "Your next adventure starts here" : "No matching worlds", comment: "Empty worlds list")).font(.title3.bold())
                     if query.isEmpty { Text("Create a world with the settings you want.").foregroundStyle(.secondary) }
                 }.frame(maxWidth: .infinity).padding(.vertical, 64)
             } else if grid {
@@ -144,7 +144,7 @@ struct WorldsSection: View {
                         .accessibilityLabel("Options for \(world.name)")
                 }
                 HStack(spacing: 8) {
-                    Label(world.mode.capitalized, systemImage: world.mode == "creative" ? "cube" : "leaf")
+                    Label(NSLocalizedString(world.mode.capitalized, comment: "Game mode"), systemImage: world.mode == "creative" ? "cube" : "leaf")
                     Spacer()
                     Text(world.version)
                 }.font(.caption).foregroundStyle(.secondary)

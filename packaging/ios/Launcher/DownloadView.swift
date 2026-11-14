@@ -180,10 +180,10 @@ struct DownloadView: View {
                         .font(Theme.pixel(14, .bold))
                         .foregroundStyle(Theme.accentText)
                         .tracking(2)
-                    Text(title)
+                    Text(NSLocalizedString(title, comment: "Download status"))
                         .font(Theme.pixel(28, .bold))
                         .foregroundStyle(Theme.text)
-                    Text(subtitle)
+                    Text(NSLocalizedString(subtitle, comment: "Download detail"))
                         .font(Theme.sans(15))
                         .foregroundStyle(Theme.textMuted)
                         .fixedSize(horizontal: false, vertical: true)
@@ -216,7 +216,7 @@ struct DownloadView: View {
                     }
                 }
                 Spacer()
-                Text(footnote)
+                Text(NSLocalizedString(footnote, comment: "Download guidance"))
                     .font(Theme.sans(12))
                     .foregroundStyle(Theme.textFaint)
                     .fixedSize(horizontal: false, vertical: true)
@@ -284,11 +284,11 @@ struct DownloadView: View {
 
     private func row(_ label: String, _ value: String) -> some View {
         HStack {
-            Text(label)
+            Text(NSLocalizedString(label, comment: "Download statistic"))
                 .font(Theme.sans(14))
                 .foregroundStyle(Theme.textMuted)
             Spacer()
-            Text(value)
+            Text(NSLocalizedString(value, comment: "Download statistic value"))
                 .font(Theme.mono(14))
                 .foregroundStyle(Theme.text)
                 .monospacedDigit()
