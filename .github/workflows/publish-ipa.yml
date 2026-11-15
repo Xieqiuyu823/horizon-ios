@@ -1,0 +1,37 @@
+name: Publish existing IPA
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/publish-ipa.yml]
+  workflow_dispatch:
+permissions:
+  actions: read
+  contents: write
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download successful build
+        uses: actions/download-artifact@v4
+        with:
+          name: horizon-ios-game
+          run-id: 43620792098
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish unsigned IPA
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          sha256sum Horizon-game-unsigned.ipa > SHA256SUMS
+          cat > notes.md <<'NOTES'
+          Horizon iOS 简体中文测试版。
+
+          - 未签名 IPA，安装前需要自行签名。
+          - 启动器主要界面提供简体中文；部分动态内容可能仍为英文。
+          - 游戏内中文和字形需要完整的游戏资源，尚未进行真机验证。
+          - 构建记录：https://github.com/Xieqiuyu823/horizon-ios/actions/runs/43620792098
+          NOTES
+          gh release create ios-zh-cn-20261115 Horizon-game-unsigned.ipa SHA256SUMS \
+            --target 688012dbeb62fb182e3901f84b68362834261f4a \
+            --title 'Horizon iOS 简体中文测试版' --notes-file notes.md --prerelease
