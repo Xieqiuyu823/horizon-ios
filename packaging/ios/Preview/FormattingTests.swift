@@ -275,6 +275,12 @@ final class AutomaticGameFilesTests: XCTestCase {
         XCTAssertEqual(GameFilesDownload.explain(other), "The archive was not a game-files ZIP.")
     }
 
+    func testAutomaticTLSFailureOffersPreparedZIP() {
+        let failure = NSError(domain: NSURLErrorDomain, code: NSURLErrorSecureConnectionFailed)
+        let message = GameFilesDownload.explain(failure)
+        XCTAssertTrue(message.contains("prepared ZIP") || message.contains("已准备好的 ZIP"))
+    }
+
     func testAutomaticSourceFailureNeedsExplicitRetry() async {
         let restore = temporarilyRemoveResourceMarker()
         defer { restore() }
@@ -385,6 +391,30 @@ final class AutomaticGameFilesTests: XCTestCase {
         if case .done = model.state {} else { XCTFail("Download did not finish: \(model.state)") }
         XCTAssertEqual(model.link, "https://example.invalid/private.zip")
         XCTAssertEqual(model.token, "private-test-token")
+    }
+
+    func testPreparedLinkCanRecoverFromAutomaticFailure() async throws {
+        let restore = temporarilyRemoveResourceMarker()
+        defer { restore() }
+        guard let url = ProcessInfo.processInfo.environment["HORIZON_DOWNLOAD_FIXTURE_URL"] else {
+            throw XCTSkip("Requires the loopback download fixture")
+        }
+        let savedLink = UserDefaults.standard.object(forKey: "gameFilesLink")
+        defer { UserDefaults.standard.set(savedLink, forKey: "gameFilesLink") }
+        let imported = expectation(description: "Backup download reaches the game-file validator")
+        let model = GameFilesDownload(importArchive: { command in
+            XCTAssertTrue(command.hasPrefix("import-game-files "))
+            imported.fulfill()
+            return ["ok": true, "kind": "resources"]
+        }, automaticSource: { ["error": "Fixture source is unavailable"] })
+        await model.startAutomatic()
+        XCTAssertNotNil(model.automaticFailure)
+        model.link = url
+        model.token = ""
+        model.start(requireGameFiles: true)
+        await fulfillment(of: [imported], timeout: 10)
+        XCTAssertNil(model.automaticFailure)
+        if case .done = model.state {} else { XCTFail("Backup download did not finish: \(model.state)") }
     }
 
     func testFilesArrivingDuringTransferDoNotGetReplaced() async throws {

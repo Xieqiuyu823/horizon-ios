@@ -389,6 +389,11 @@ struct GameFilesCard: View {
     /// The game has none yet: say so first.
     var missing: Bool
     var setupHelp: (() -> Void)? = nil
+    var showsFilePicker = true
+    @State private var choosingFile = false
+    @State private var fileIssue: String?
+
+    private var automaticFailed: Bool { download.automaticFailure != nil }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -398,8 +403,8 @@ struct GameFilesCard: View {
                 Text(missing ? "Game files needed" : "Download game files")
                     .font(Theme.pixel(18)).foregroundStyle(Theme.text)
             }
-            if missing, download.automaticFailure != nil {
-                Text("Automatic setup could not reach the download server. Use the other ways to bring game files from your computer.")
+            if missing, automaticFailed {
+                Text("To finish setup, choose a prepared game-files ZIP from Files or enter its download link.")
                     .font(Theme.sans(12)).foregroundStyle(Theme.textMuted)
             } else if missing {
                 Text("Horizon downloads and installs the game files automatically. Keep this screen open until setup finishes.")
@@ -414,21 +419,27 @@ struct GameFilesCard: View {
             if download.busy {
                 SecondaryButton(title: "Cancel", action: download.cancel)
                     .disabled(download.state == .installing)
-            } else {
-                if missing {
-                    PrimaryButton(title: "Download game files", icon: "arrow.down") {
-                        Task { await download.startAutomatic() }
+            } else if missing {
+                if automaticFailed {
+                    if showsFilePicker {
+                        PrimaryButton(title: "Choose prepared ZIP", icon: "folder", action: openFilePicker)
+                            .accessibilityIdentifier("launcher-import-prepared-files")
                     }
-                    .accessibilityIdentifier("launcher-download-game-files")
+                    SecondaryButton(title: "Retry automatic download", icon: "arrow.clockwise", action: retryAutomatic)
+                        .accessibilityIdentifier("launcher-download-game-files")
+                } else {
+                    PrimaryButton(title: "Download game files", icon: "arrow.down", action: retryAutomatic)
+                        .accessibilityIdentifier("launcher-download-game-files")
+                    if showsFilePicker {
+                        SecondaryButton(title: "Choose prepared ZIP", icon: "folder", action: openFilePicker)
+                            .accessibilityIdentifier("launcher-import-prepared-files")
+                    }
                 }
             }
-            DisclosureGroup(missing ? "Use a download link instead" : "Download from a link") {
-                Text("""
-                Horizon plays with the files your own Minecraft: Java Edition makes. Prepare them on a computer \
-                (horizon-prepare, then pack them as a zip), put the zip somewhere this phone can reach, such as your \
-                computer on this Wi-Fi or a server of your own, and paste its link. Worlds and resource packs \
-                (.zip) work too.
-                """)
+            DisclosureGroup(LocalizedStringKey(missing ? "Use a download link instead" : "Download from a link")) {
+                Text(missing
+                     ? "Prepare Minecraft: Java Edition game files with the Horizon desktop launcher, export them as a ZIP, and paste a link to that ZIP."
+                     : "Paste a link to a prepared game-files ZIP, a world ZIP, or a resource pack ZIP.")
                 .font(Theme.sans(12)).foregroundStyle(Theme.textMuted)
                 .fixedSize(horizontal: false, vertical: true)
 
@@ -437,8 +448,10 @@ struct GameFilesCard: View {
                 Field(title: "ACCESS TOKEN (OPTIONAL)", placeholder: "Sent as a Bearer token", text: $download.token,
                       secure: true)
 
-                PrimaryButton(title: "Download from link", icon: "arrow.down", action: download.start)
-                    .disabled(download.busy || download.link.trimmingCharacters(in: .whitespaces).isEmpty)
+                PrimaryButton(title: "Download from link", icon: "arrow.down") {
+                    download.start(requireGameFiles: missing)
+                }
+                .disabled(download.busy || download.link.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
             Text("You can also send the zip from the game's own screen over Wi-Fi, or drop it into Horizon's folder in the Files app.")
                 .font(Theme.sans(11)).foregroundStyle(Theme.textFaint)
@@ -447,7 +460,20 @@ struct GameFilesCard: View {
         .padding(16)
         .background(Theme.surface, in: RoundedRectangle(cornerRadius: 12))
         .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(missing ? Theme.noticeBorder : Theme.border))
+        .fileImporter(isPresented: $choosingFile, allowedContentTypes: [.zip]) { result in
+            switch result {
+            case let .success(url): Task { await download.importPreparedFile(url) }
+            case let .failure(error): fileIssue = error.localizedDescription
+            }
+        }
+        .alert("Couldn’t open game files", isPresented: Binding(
+            get: { fileIssue != nil }, set: { if !$0 { fileIssue = nil } }
+        )) { Button("OK", role: .cancel) {} } message: { Text(fileIssue ?? "") }
     }
+
+    private func openFilePicker() { choosingFile = true }
+
+    private func retryAutomatic() { Task { await download.startAutomatic() } }
 
     @ViewBuilder private var progress: some View {
         switch download.state {
@@ -538,7 +564,7 @@ struct GameFilesRecovery: View {
                     Link("Read game-file transfer instructions", destination: URL(string: "https://github.com/heyskylo/horizon-ios/blob/main/docs/native-client.md#carry-your-game-files-to-a-phone")!)
                 }
                 Section("Automatic setup or download link") {
-                    GameFilesCard(download: download, missing: true)
+                    GameFilesCard(download: download, missing: true, showsFilePicker: false)
                 }
             }
             .navigationTitle("Game files needed")
