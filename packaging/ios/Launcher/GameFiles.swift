@@ -146,15 +146,74 @@ final class GameFilesDownload: NSObject, ObservableObject {
         }
     }
 
+    /// A ZIP already in Documents (Finder/Files sharing) is the way in when the
+    /// automatic server cannot be reached. The game only scans that folder at
+    /// process start, so a file copied after launch would otherwise sit there
+    /// while Play stays closed.
+    func importDroppedZips() async -> Bool {
+        guard !GameFolder.hasGameFiles, !busy else { return GameFolder.hasGameFiles }
+        let files = (try? FileManager.default.contentsOfDirectory(
+            at: GameFolder.documents,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        )) ?? []
+        let zips = files.filter { url in
+            url.pathExtension.lowercased() == "zip"
+                && !url.lastPathComponent.hasPrefix("horizon-download-")
+        }.sorted { $0.lastPathComponent < $1.lastPathComponent }
+        guard !zips.isEmpty else { return false }
+        for file in zips {
+            await importPreparedFile(file)
+            if GameFolder.hasGameFiles { return true }
+        }
+        // A world or pack archive is not the prepared game. Leave Play free to
+        // try the automatic server instead of sticking on that failure.
+        if !GameFolder.hasGameFiles { state = .idle }
+        return false
+    }
+
+    /// Connection failures from the automatic server, as a player can act on.
+    /// Other errors keep the system text (a refused token, a bad archive).
+    static func explain(_ error: Error) -> String {
+        let ns = error as NSError
+        if ns.domain == NSURLErrorDomain, [
+            NSURLErrorCannotConnectToHost,
+            NSURLErrorCannotFindHost,
+            NSURLErrorDNSLookupFailed,
+            NSURLErrorTimedOut,
+            NSURLErrorNetworkConnectionLost,
+            NSURLErrorNotConnectedToInternet,
+            NSURLErrorInternationalRoamingOff,
+            NSURLErrorDataNotAllowed,
+        ].contains(ns.code) {
+            return NSLocalizedString(
+                "The automatic download server is not reachable. Transfer a prepared game-files ZIP from your computer, or choose another link.",
+                comment: "Game files server offline"
+            )
+        }
+        return error.localizedDescription
+    }
+
     private func begin(url: URL, token: String?) {
         var request = URLRequest(url: url)
+        // The automatic host is one server. A dead connection should fail in
+        // seconds, not sit on Play as if setup were still running. A custom
+        // link keeps the longer default so a slow transfer is not cut off.
+        request.timeoutInterval = resourcesOnly ? 15 : 60
         if let token { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
         // A prepared tree is ~600 MB: ask for the time to finish if the player looks away.
         background = UIApplication.shared.beginBackgroundTask(withName: "Horizon game files") { [weak self] in
             let download = self
             Task { @MainActor in download?.endBackground() }
         }
-        let session = URLSession(configuration: .default, delegate: self, delegateQueue: nil)
+        let configuration = URLSessionConfiguration.default
+        if resourcesOnly {
+            // A black-holed host otherwise stays "downloading" for the session's
+            // default minute, and Play never opens the transfer steps.
+            configuration.timeoutIntervalForRequest = 15
+            configuration.waitsForConnectivity = false
+        }
+        let session = URLSession(configuration: configuration, delegate: self, delegateQueue: nil)
         self.session = session
         state = .downloading(received: 0, total: 0)
         session.downloadTask(with: request).resume()
@@ -186,7 +245,7 @@ final class GameFilesDownload: NSObject, ObservableObject {
         session = nil
         switch outcome {
         case let .failure(error):
-            state = .failed(error.localizedDescription)
+            state = .failed(resourcesOnly ? Self.explain(error) : error.localizedDescription)
             Haptics.failed()
         case let .success(file):
             defer { try? FileManager.default.removeItem(at: file) }
@@ -339,7 +398,10 @@ struct GameFilesCard: View {
                 Text(missing ? "Game files needed" : "Download game files")
                     .font(Theme.pixel(18)).foregroundStyle(Theme.text)
             }
-            if missing {
+            if missing, download.automaticFailure != nil {
+                Text("Automatic setup could not reach the download server. Use the other ways to bring game files from your computer.")
+                    .font(Theme.sans(12)).foregroundStyle(Theme.textMuted)
+            } else if missing {
                 Text("Horizon downloads and installs the game files automatically. Keep this screen open until setup finishes.")
                     .font(Theme.sans(12)).foregroundStyle(Theme.textMuted)
             }

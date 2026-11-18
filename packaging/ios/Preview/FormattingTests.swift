@@ -262,6 +262,19 @@ final class AutomaticGameFilesTests: XCTestCase {
         }
     }
 
+    func testUnreachableAutomaticServerIsExplained() {
+        let offline = NSError(domain: NSURLErrorDomain, code: NSURLErrorCannotConnectToHost, userInfo: [
+            NSLocalizedDescriptionKey: "Could not connect to the server.",
+        ])
+        let message = GameFilesDownload.explain(offline)
+        XCTAssertFalse(message.contains("Could not connect to the server."))
+        XCTAssertTrue(message.contains("not reachable") || message.contains("无法连接"))
+        let other = NSError(domain: "test", code: 1, userInfo: [
+            NSLocalizedDescriptionKey: "The archive was not a game-files ZIP.",
+        ])
+        XCTAssertEqual(GameFilesDownload.explain(other), "The archive was not a game-files ZIP.")
+    }
+
     func testAutomaticSourceFailureNeedsExplicitRetry() async {
         let restore = temporarilyRemoveResourceMarker()
         defer { restore() }

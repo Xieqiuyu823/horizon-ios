@@ -93,6 +93,10 @@ struct HomeView: View {
                     await link.refresh()
                     if GameFolder.hasGameFiles { link.requestingGameFiles = false }
                 }
+            } else if case .failed = state, download.automaticFailure != nil {
+                // Play stays closed without game files. Show the transfer steps
+                // instead of leaving the failed download on the title card.
+                link.requestingGameFiles = true
             }
         }
         .alert("Something went wrong", isPresented: Binding(
@@ -108,7 +112,10 @@ struct HomeView: View {
             await link.watch()
         }
         .task(id: link.phase) {
-            if link.phase == .waiting { await download.startAutomaticallyIfNeeded() }
+            if link.phase == .waiting, !GameFolder.hasGameFiles {
+                if await download.importDroppedZips() { return }
+                await download.startAutomaticallyIfNeeded()
+            }
         }
     }
 

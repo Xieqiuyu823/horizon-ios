@@ -7327,7 +7327,9 @@ mod tests {
                 assert!(ui.center_language);
             }
             assert!(ui.back(&mut s).contains(&Event::Close));
-            assert_eq!(s.language, "en_us");
+            // Leaving the page without choosing a language keeps the saved
+            // default (en_us, or zh_cn on the Chinese iOS build).
+            assert_eq!(s.language, crate::options_file::DEFAULT_LANGUAGE);
             ui.open(false);
             ui.show(page);
             assert!(!ui.back(&mut s).contains(&Event::Close));
