@@ -1,0 +1,28 @@
+name: Verify iOS game files
+on:
+  push:
+    branches: [verify/ios-game-download]
+permissions:
+  contents: read
+jobs:
+  simulator:
+    runs-on: macos-26-intel
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Prepare iOS Simulator
+        run: |
+          set -euo pipefail
+          command -v xcodegen >/dev/null || brew install xcodegen
+          device=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; print(next(device["udid"] for runtime,devices in json.load(sys.stdin)["devices"].items() if ".iOS-" in runtime for device in devices if device["name"].startswith("iPhone")))')
+          xcrun simctl boot "$device"
+          xcrun simctl bootstatus "$device" -b
+          printf 'HORIZON_TEST_SIMULATOR=%s\n' "$device" >> "$GITHUB_ENV"
+      - name: Exercise game-file download and recovery
+        run: |
+          python3 tools/test_ios_game_files.py --device "$HORIZON_TEST_SIMULATOR" --derived-data "$RUNNER_TEMP/horizon-game-files" || {
+            tail -100 "$RUNNER_TEMP/horizon-game-files/auto-files-test.log" || true
+            exit 1
+          }
