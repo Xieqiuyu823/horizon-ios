@@ -26,7 +26,10 @@ final class GameFilesDownload: NSObject, ObservableObject {
     // Same packed-ZIP limit as horizon_client::import::MAX_PACKED. Enforce
     // it during transfer, before an oversized archive fills the sandbox.
     private nonisolated static let maximumArchiveBytes: Int64 = 2 << 30
-    private var resourcesOnly = false
+    private enum DownloadKind: Equatable {
+        case automatic, preparedLink, anyArchive
+    }
+    private var downloadKind = DownloadKind.anyArchive
     private var resolvingAutomatic = false
     private var attempt = UUID()
     private var session: URLSession?
@@ -50,7 +53,7 @@ final class GameFilesDownload: NSObject, ObservableObject {
     /// Only automatic setup failures belong in the Play panel. Custom-link and
     /// local-file errors remain in their own setup UI.
     var automaticFailure: String? {
-        guard resourcesOnly, case let .failed(message) = state else { return nil }
+        guard downloadKind == .automatic, case let .failed(message) = state else { return nil }
         return message
     }
 
@@ -59,10 +62,10 @@ final class GameFilesDownload: NSObject, ObservableObject {
         GameFolder.documents.appendingPathComponent("horizon-download-\(UUID().uuidString).zip")
     }
 
-    func start() {
+    func start(requireGameFiles: Bool = false) {
         guard !busy else { return }
         attempt = UUID()
-        resourcesOnly = false
+        downloadKind = requireGameFiles ? .preparedLink : .anyArchive
         let text = link.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let url = URL(string: text), let scheme = url.scheme?.lowercased(),
               scheme == "https" || scheme == "http", url.host != nil
@@ -90,7 +93,7 @@ final class GameFilesDownload: NSObject, ObservableObject {
     func startAutomatic() async {
         guard !busy else { return }
         automaticAttempted = true
-        resourcesOnly = true
+        downloadKind = .automatic
         resolvingAutomatic = true
         attempt = UUID()
         let generation = attempt
@@ -113,7 +116,7 @@ final class GameFilesDownload: NSObject, ObservableObject {
     /// Import through the same resource-only validator as automatic setup.
     func importPreparedFile(_ url: URL) async {
         guard !busy else { return }
-        resourcesOnly = false
+        downloadKind = .anyArchive
         attempt = UUID()
         let generation = attempt
         let scoped = url.startAccessingSecurityScopedResource()
@@ -134,13 +137,15 @@ final class GameFilesDownload: NSObject, ObservableObject {
                 }
                 try FileManager.default.copyItem(at: url, to: local)
             }.value
-            guard generation == attempt, !Task.isCancelled else { return }
+            guard generation == attempt else { return }
+            if Task.isCancelled { state = .idle; return }
             let answer = await importArchive("import-game-files \(local.path)")
             guard generation == attempt else { return }
             if let error = answer.error { state = .failed(error); Haptics.failed() }
             else { state = .done(Self.describe(answer)); Haptics.done() }
         } catch {
-            guard generation == attempt, !Task.isCancelled else { return }
+            guard generation == attempt else { return }
+            if Task.isCancelled { state = .idle; return }
             state = .failed(error.localizedDescription)
             Haptics.failed()
         }
@@ -163,6 +168,7 @@ final class GameFilesDownload: NSObject, ObservableObject {
         }.sorted { $0.lastPathComponent < $1.lastPathComponent }
         guard !zips.isEmpty else { return false }
         for file in zips {
+            guard !Task.isCancelled, !busy else { return false }
             await importPreparedFile(file)
             if GameFolder.hasGameFiles { return true }
         }
@@ -176,6 +182,18 @@ final class GameFilesDownload: NSObject, ObservableObject {
     /// Other errors keep the system text (a refused token, a bad archive).
     static func explain(_ error: Error) -> String {
         let ns = error as NSError
+        if ns.domain == NSURLErrorDomain, [
+            NSURLErrorSecureConnectionFailed,
+            NSURLErrorServerCertificateHasBadDate,
+            NSURLErrorServerCertificateUntrusted,
+            NSURLErrorServerCertificateHasUnknownRoot,
+            NSURLErrorServerCertificateNotYetValid,
+        ].contains(ns.code) {
+            return NSLocalizedString(
+                "A secure connection to the automatic download server could not be established. Import a prepared ZIP or use another download link.",
+                comment: "Game files server TLS failure"
+            )
+        }
         if ns.domain == NSURLErrorDomain, [
             NSURLErrorCannotConnectToHost,
             NSURLErrorCannotFindHost,
@@ -199,7 +217,7 @@ final class GameFilesDownload: NSObject, ObservableObject {
         // The automatic host is one server. A dead connection should fail in
         // seconds, not sit on Play as if setup were still running. A custom
         // link keeps the longer default so a slow transfer is not cut off.
-        request.timeoutInterval = resourcesOnly ? 15 : 60
+        request.timeoutInterval = downloadKind == .automatic ? 15 : 60
         if let token { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
         // A prepared tree is ~600 MB: ask for the time to finish if the player looks away.
         background = UIApplication.shared.beginBackgroundTask(withName: "Horizon game files") { [weak self] in
@@ -207,7 +225,7 @@ final class GameFilesDownload: NSObject, ObservableObject {
             Task { @MainActor in download?.endBackground() }
         }
         let configuration = URLSessionConfiguration.default
-        if resourcesOnly {
+        if downloadKind == .automatic {
             // A black-holed host otherwise stays "downloading" for the session's
             // default minute, and Play never opens the transfer steps.
             configuration.timeoutIntervalForRequest = 15
@@ -245,17 +263,17 @@ final class GameFilesDownload: NSObject, ObservableObject {
         session = nil
         switch outcome {
         case let .failure(error):
-            state = .failed(resourcesOnly ? Self.explain(error) : error.localizedDescription)
+            state = .failed(downloadKind == .automatic ? Self.explain(error) : error.localizedDescription)
             Haptics.failed()
         case let .success(file):
             defer { try? FileManager.default.removeItem(at: file) }
             // A manual/cable import can also finish after the HTTP transfer began.
-            guard !resourcesOnly || !GameFolder.hasGameFiles else {
+            guard downloadKind == .anyArchive || !GameFolder.hasGameFiles else {
                 state = .done("Game files are already installed.")
                 break
             }
             state = .installing
-            let command = resourcesOnly ? "import-game-files" : "import"
+            let command = downloadKind == .anyArchive ? "import" : "import-game-files"
             let answer = await importArchive("\(command) \(file.path)")
             guard generation == attempt else { return }
             if let error = answer.error {
