@@ -1,13 +1,24 @@
 name: Build unsigned IPA
 # The game for iPhone and iPad, and nothing else: the Rust game cross-compiled for aarch64-apple-ios, wrapped by
 # packaging/ios/project.yml's HorizonGame target, and uploaded as an unsigned .ipa. No tests run here.
+# A successful build is also published with tools/ci/publish-ios-release.sh (the same release script the
+# old main-branch job used). The IPA is unsigned: sign it before installing. Ad-hoc signatures are rejected
+# by tools/ci/ios_release.py.
 on:
   workflow_dispatch:
+  workflow_call:
+  push:
+    branches:
+      - main
+      - cursor/ios-entry-when-files-server-down-bf35
+    # Manual tags are started by publish-ipa.yml, which calls this workflow. Do not also list
+    # them here: publish-ios-release.sh creates ios-build-* tags, and a second listener would
+    # build the same commit twice.
 permissions:
   contents: read
 concurrency:
-  group: ios-${{ github.sha }}
-  cancel-in-progress: false
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
 env:
   HORIZON_TELEMETRY_URL: "off"
   IOS_TARGET: aarch64-apple-ios
@@ -23,10 +34,12 @@ env:
 
 jobs:
   ipa:
-    # The native launcher uses the iOS 26 SDK (Liquid Glass). macos-15 defaults to Xcode 16.4.
-    # MAC_RUNNER remains available for a maintainer-provided runner with Xcode 26 or newer.
-    # Both Rust and Xcode still explicitly target ARM64 iOS below.
-    runs-on: ${{ vars.MAC_RUNNER || 'macos-26' }}
+    # GitHub-hosted macOS 26. macos-latest and macos-26 are the arm64 pool, which failed to
+    # acquire a runner ("not acquired by Runner of type hosted"). macos-26-intel is the standard
+    # x64 image with the same Xcode 26. macos-15 only has Xcode 16, which tools/ci/ios-toolchain.sh
+    # rejects. Rust and Xcode both target ARM64 iOS below. The IPA is unsigned
+    # (CODE_SIGNING_ALLOWED=NO); an ad-hoc signature would fail the audit.
+    runs-on: macos-26-intel
     timeout-minutes: 90
     defaults:
       run:
@@ -39,7 +52,8 @@ jobs:
       - name: Check the Apple toolchain
         run: bash tools/ci/ios-toolchain.sh
       - name: Install Rust iOS toolchain
-        uses: dtolnay/rust-toolchain@stable
+        # The workspace MSRV. Stable is newer; this build is pinned so the phone binary matches 1.95.
+        uses: dtolnay/rust-toolchain@1.95.0
         with:
           targets: ${{ env.IOS_TARGET }}
       - name: Restore Rust build cache
@@ -86,3 +100,36 @@ jobs:
           path: Horizon-game-unsigned.ipa
           retention-days: 7
           if-no-files-found: error
+
+  release:
+    needs: ipa
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Download unsigned IPA
+        uses: actions/download-artifact@v4
+        with:
+          name: horizon-ios-game
+          path: ipa-artifact
+      - name: Prepare versioned IPA and checksum
+        id: asset
+        run: |
+          python3 tools/ci/ios_release.py ipa-artifact/Horizon-game-unsigned.ipa \
+            --expect-commit "$GITHUB_SHA" --run-number "$GITHUB_RUN_NUMBER" --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --output-dir release-assets >> "$GITHUB_OUTPUT"
+      - name: Publish unsigned release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          IPA: ${{ steps.asset.outputs.ipa }}
+          CHECKSUM: ${{ steps.asset.outputs.checksum }}
+          VERSION: ${{ steps.asset.outputs.version }}
+          BUILD: ${{ steps.asset.outputs.build }}
+        run: bash tools/ci/publish-ios-release.sh

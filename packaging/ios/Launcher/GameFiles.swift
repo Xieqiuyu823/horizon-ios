@@ -26,7 +26,10 @@ final class GameFilesDownload: NSObject, ObservableObject {
     // Same packed-ZIP limit as horizon_client::import::MAX_PACKED. Enforce
     // it during transfer, before an oversized archive fills the sandbox.
     private nonisolated static let maximumArchiveBytes: Int64 = 2 << 30
-    private var resourcesOnly = false
+    private enum DownloadKind: Equatable {
+        case automatic, preparedLink, anyArchive
+    }
+    private var downloadKind = DownloadKind.anyArchive
     private var resolvingAutomatic = false
     private var attempt = UUID()
     private var session: URLSession?
@@ -50,7 +53,7 @@ final class GameFilesDownload: NSObject, ObservableObject {
     /// Only automatic setup failures belong in the Play panel. Custom-link and
     /// local-file errors remain in their own setup UI.
     var automaticFailure: String? {
-        guard resourcesOnly, case let .failed(message) = state else { return nil }
+        guard downloadKind == .automatic, case let .failed(message) = state else { return nil }
         return message
     }
 
@@ -59,10 +62,10 @@ final class GameFilesDownload: NSObject, ObservableObject {
         GameFolder.documents.appendingPathComponent("horizon-download-\(UUID().uuidString).zip")
     }
 
-    func start() {
+    func start(requireGameFiles: Bool = false) {
         guard !busy else { return }
         attempt = UUID()
-        resourcesOnly = false
+        downloadKind = requireGameFiles ? .preparedLink : .anyArchive
         let text = link.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let url = URL(string: text), let scheme = url.scheme?.lowercased(),
               scheme == "https" || scheme == "http", url.host != nil
@@ -90,7 +93,7 @@ final class GameFilesDownload: NSObject, ObservableObject {
     func startAutomatic() async {
         guard !busy else { return }
         automaticAttempted = true
-        resourcesOnly = true
+        downloadKind = .automatic
         resolvingAutomatic = true
         attempt = UUID()
         let generation = attempt
@@ -113,7 +116,7 @@ final class GameFilesDownload: NSObject, ObservableObject {
     /// Import through the same resource-only validator as automatic setup.
     func importPreparedFile(_ url: URL) async {
         guard !busy else { return }
-        resourcesOnly = false
+        downloadKind = .anyArchive
         attempt = UUID()
         let generation = attempt
         let scoped = url.startAccessingSecurityScopedResource()
@@ -134,27 +137,101 @@ final class GameFilesDownload: NSObject, ObservableObject {
                 }
                 try FileManager.default.copyItem(at: url, to: local)
             }.value
-            guard generation == attempt, !Task.isCancelled else { return }
+            guard generation == attempt else { return }
+            if Task.isCancelled { state = .idle; return }
             let answer = await importArchive("import-game-files \(local.path)")
             guard generation == attempt else { return }
             if let error = answer.error { state = .failed(error); Haptics.failed() }
             else { state = .done(Self.describe(answer)); Haptics.done() }
         } catch {
-            guard generation == attempt, !Task.isCancelled else { return }
+            guard generation == attempt else { return }
+            if Task.isCancelled { state = .idle; return }
             state = .failed(error.localizedDescription)
             Haptics.failed()
         }
     }
 
+    /// A ZIP already in Documents (Finder/Files sharing) is the way in when the
+    /// automatic server cannot be reached. The game only scans that folder at
+    /// process start, so a file copied after launch would otherwise sit there
+    /// while Play stays closed.
+    func importDroppedZips() async -> Bool {
+        guard !GameFolder.hasGameFiles, !busy else { return GameFolder.hasGameFiles }
+        let files = (try? FileManager.default.contentsOfDirectory(
+            at: GameFolder.documents,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        )) ?? []
+        let zips = files.filter { url in
+            url.pathExtension.lowercased() == "zip"
+                && !url.lastPathComponent.hasPrefix("horizon-download-")
+        }.sorted { $0.lastPathComponent < $1.lastPathComponent }
+        guard !zips.isEmpty else { return false }
+        for file in zips {
+            guard !Task.isCancelled, !busy else { return false }
+            await importPreparedFile(file)
+            if GameFolder.hasGameFiles { return true }
+        }
+        // A world or pack archive is not the prepared game. Leave Play free to
+        // try the automatic server instead of sticking on that failure.
+        if !GameFolder.hasGameFiles { state = .idle }
+        return false
+    }
+
+    /// Connection failures from the automatic server, as a player can act on.
+    /// Other errors keep the system text (a refused token, a bad archive).
+    static func explain(_ error: Error) -> String {
+        let ns = error as NSError
+        if ns.domain == NSURLErrorDomain, [
+            NSURLErrorSecureConnectionFailed,
+            NSURLErrorServerCertificateHasBadDate,
+            NSURLErrorServerCertificateUntrusted,
+            NSURLErrorServerCertificateHasUnknownRoot,
+            NSURLErrorServerCertificateNotYetValid,
+        ].contains(ns.code) {
+            return NSLocalizedString(
+                "A secure connection to the automatic download server could not be established. Import a prepared ZIP or use another download link.",
+                comment: "Game files server TLS failure"
+            )
+        }
+        if ns.domain == NSURLErrorDomain, [
+            NSURLErrorCannotConnectToHost,
+            NSURLErrorCannotFindHost,
+            NSURLErrorDNSLookupFailed,
+            NSURLErrorTimedOut,
+            NSURLErrorNetworkConnectionLost,
+            NSURLErrorNotConnectedToInternet,
+            NSURLErrorInternationalRoamingOff,
+            NSURLErrorDataNotAllowed,
+        ].contains(ns.code) {
+            return NSLocalizedString(
+                "The automatic download server is not reachable. Transfer a prepared game-files ZIP from your computer, or choose another link.",
+                comment: "Game files server offline"
+            )
+        }
+        return error.localizedDescription
+    }
+
     private func begin(url: URL, token: String?) {
         var request = URLRequest(url: url)
+        // The automatic host is one server. A dead connection should fail in
+        // seconds, not sit on Play as if setup were still running. A custom
+        // link keeps the longer default so a slow transfer is not cut off.
+        request.timeoutInterval = downloadKind == .automatic ? 15 : 60
         if let token { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
         // A prepared tree is ~600 MB: ask for the time to finish if the player looks away.
         background = UIApplication.shared.beginBackgroundTask(withName: "Horizon game files") { [weak self] in
             let download = self
             Task { @MainActor in download?.endBackground() }
         }
-        let session = URLSession(configuration: .default, delegate: self, delegateQueue: nil)
+        let configuration = URLSessionConfiguration.default
+        if downloadKind == .automatic {
+            // A black-holed host otherwise stays "downloading" for the session's
+            // default minute, and Play never opens the transfer steps.
+            configuration.timeoutIntervalForRequest = 15
+            configuration.waitsForConnectivity = false
+        }
+        let session = URLSession(configuration: configuration, delegate: self, delegateQueue: nil)
         self.session = session
         state = .downloading(received: 0, total: 0)
         session.downloadTask(with: request).resume()
@@ -186,17 +263,17 @@ final class GameFilesDownload: NSObject, ObservableObject {
         session = nil
         switch outcome {
         case let .failure(error):
-            state = .failed(error.localizedDescription)
+            state = .failed(downloadKind == .automatic ? Self.explain(error) : error.localizedDescription)
             Haptics.failed()
         case let .success(file):
             defer { try? FileManager.default.removeItem(at: file) }
             // A manual/cable import can also finish after the HTTP transfer began.
-            guard !resourcesOnly || !GameFolder.hasGameFiles else {
+            guard downloadKind == .anyArchive || !GameFolder.hasGameFiles else {
                 state = .done("Game files are already installed.")
                 break
             }
             state = .installing
-            let command = resourcesOnly ? "import-game-files" : "import"
+            let command = downloadKind == .anyArchive ? "import" : "import-game-files"
             let answer = await importArchive("\(command) \(file.path)")
             guard generation == attempt else { return }
             if let error = answer.error {
@@ -330,6 +407,11 @@ struct GameFilesCard: View {
     /// The game has none yet: say so first.
     var missing: Bool
     var setupHelp: (() -> Void)? = nil
+    var showsFilePicker = true
+    @State private var choosingFile = false
+    @State private var fileIssue: String?
+
+    private var automaticFailed: Bool { download.automaticFailure != nil }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -339,7 +421,10 @@ struct GameFilesCard: View {
                 Text(missing ? "Game files needed" : "Download game files")
                     .font(Theme.pixel(18)).foregroundStyle(Theme.text)
             }
-            if missing {
+            if missing, automaticFailed {
+                Text("To finish setup, choose a prepared game-files ZIP from Files or enter its download link.")
+                    .font(Theme.sans(12)).foregroundStyle(Theme.textMuted)
+            } else if missing {
                 Text("Horizon downloads and installs the game files automatically. Keep this screen open until setup finishes.")
                     .font(Theme.sans(12)).foregroundStyle(Theme.textMuted)
             }
@@ -352,21 +437,27 @@ struct GameFilesCard: View {
             if download.busy {
                 SecondaryButton(title: "Cancel", action: download.cancel)
                     .disabled(download.state == .installing)
-            } else {
-                if missing {
-                    PrimaryButton(title: "Download game files", icon: "arrow.down") {
-                        Task { await download.startAutomatic() }
+            } else if missing {
+                if automaticFailed {
+                    if showsFilePicker {
+                        PrimaryButton(title: "Choose prepared ZIP", icon: "folder", action: openFilePicker)
+                            .accessibilityIdentifier("launcher-import-prepared-files")
                     }
-                    .accessibilityIdentifier("launcher-download-game-files")
+                    SecondaryButton(title: "Retry automatic download", icon: "arrow.clockwise", action: retryAutomatic)
+                        .accessibilityIdentifier("launcher-download-game-files")
+                } else {
+                    PrimaryButton(title: "Download game files", icon: "arrow.down", action: retryAutomatic)
+                        .accessibilityIdentifier("launcher-download-game-files")
+                    if showsFilePicker {
+                        SecondaryButton(title: "Choose prepared ZIP", icon: "folder", action: openFilePicker)
+                            .accessibilityIdentifier("launcher-import-prepared-files")
+                    }
                 }
             }
-            DisclosureGroup(missing ? "Use a download link instead" : "Download from a link") {
-                Text("""
-                Horizon plays with the files your own Minecraft: Java Edition makes. Prepare them on a computer \
-                (horizon-prepare, then pack them as a zip), put the zip somewhere this phone can reach, such as your \
-                computer on this Wi-Fi or a server of your own, and paste its link. Worlds and resource packs \
-                (.zip) work too.
-                """)
+            DisclosureGroup(LocalizedStringKey(missing ? "Use a download link instead" : "Download from a link")) {
+                Text(missing
+                     ? "Prepare Minecraft: Java Edition game files with the Horizon desktop launcher, export them as a ZIP, and paste a link to that ZIP."
+                     : "Paste a link to a prepared game-files ZIP, a world ZIP, or a resource pack ZIP.")
                 .font(Theme.sans(12)).foregroundStyle(Theme.textMuted)
                 .fixedSize(horizontal: false, vertical: true)
 
@@ -375,8 +466,10 @@ struct GameFilesCard: View {
                 Field(title: "ACCESS TOKEN (OPTIONAL)", placeholder: "Sent as a Bearer token", text: $download.token,
                       secure: true)
 
-                PrimaryButton(title: "Download from link", icon: "arrow.down", action: download.start)
-                    .disabled(download.busy || download.link.trimmingCharacters(in: .whitespaces).isEmpty)
+                PrimaryButton(title: "Download from link", icon: "arrow.down") {
+                    download.start(requireGameFiles: missing)
+                }
+                .disabled(download.busy || download.link.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
             Text("You can also send the zip from the game's own screen over Wi-Fi, or drop it into Horizon's folder in the Files app.")
                 .font(Theme.sans(11)).foregroundStyle(Theme.textFaint)
@@ -385,7 +478,20 @@ struct GameFilesCard: View {
         .padding(16)
         .background(Theme.surface, in: RoundedRectangle(cornerRadius: 12))
         .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(missing ? Theme.noticeBorder : Theme.border))
+        .fileImporter(isPresented: $choosingFile, allowedContentTypes: [.zip]) { result in
+            switch result {
+            case let .success(url): Task { await download.importPreparedFile(url) }
+            case let .failure(error): fileIssue = error.localizedDescription
+            }
+        }
+        .alert("Couldn’t open game files", isPresented: Binding(
+            get: { fileIssue != nil }, set: { if !$0 { fileIssue = nil } }
+        )) { Button("OK", role: .cancel) {} } message: { Text(fileIssue ?? "") }
     }
+
+    private func openFilePicker() { choosingFile = true }
+
+    private func retryAutomatic() { Task { await download.startAutomatic() } }
 
     @ViewBuilder private var progress: some View {
         switch download.state {
@@ -476,7 +582,7 @@ struct GameFilesRecovery: View {
                     Link("Read game-file transfer instructions", destination: URL(string: "https://github.com/heyskylo/horizon-ios/blob/main/docs/native-client.md#carry-your-game-files-to-a-phone")!)
                 }
                 Section("Automatic setup or download link") {
-                    GameFilesCard(download: download, missing: true)
+                    GameFilesCard(download: download, missing: true, showsFilePicker: false)
                 }
             }
             .navigationTitle("Game files needed")
